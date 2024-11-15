@@ -106,8 +106,7 @@ PyRect==0.2.0
 PyScreeze==1.0.1
 python-dateutil==2.9.0.post0
 pytweening==1.2.0
-pytz
-pywin32
+pytz==2024.2
 PyYAML==6.0.2
 pyzmq==26.2.0
 referencing==0.35.1
