@@ -1,35 +1,111 @@
-import pickle
+import whisper
+import pyaudio
+import wave
+import tempfile
+import streamlit as st
 import os
 import cv2
-import streamlit as st
 import mediapipe as mp
 import pandas as pd
 import numpy as np
+import pickle
+from streamlit import session_state as ss
+from streamlit_pdf_viewer import pdf_viewer
 
-mp_drawing = mp.solutions.drawing_utils # face and body landmarks
-mp_holistic = mp.solutions.holistic # Mediapipe Solutions
+# Load pre-trained Whisper model
+model_whisper = whisper.load_model("base")
+
+mp_drawing = mp.solutions.drawing_utils  # Face and body landmarks
+mp_holistic = mp.solutions.holistic  # Mediapipe Solutions
+
 with open('model.pkl', 'rb') as file:
     model = pickle.load(file)
-
-st.title("Live Emotion Recognition")
-st.write("Using your webcam, this app detects and predicts emotions in real-time.")
-run = st.checkbox("Start Webcam")
-FRAME_WINDOW = st.image([]) 
 
 holistic = mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
 # Set up Streamlit
-st.title("Emotion and Pose Detection with Webcam")
+st.title("Emotion, Pose, and Live Transcription Detection")
+st.sidebar.title("Select Interviewee and Resume")
+interviewees = ["Hoang", "Fidan", "Ojashwi"]
+resume_paths = {
+    "Hoang": "C:/Users/dang0/Downloads/hoangResume.pdf",
+    "Fidan": "fidan.pdf",
+    "Ojashwi": "ojashwi.pdf"
+}
+selected_interviewee = st.sidebar.selectbox("Choose an Interviewee:", interviewees)
 
-# Create an image placeholder to display the webcam feed
+# Declare PDF upload logic
+if 'pdf_ref' not in ss:
+    ss.pdf_ref = None
+
+st.file_uploader("Upload PDF file", type=('pdf'), key='pdf')
+
+if ss.pdf:
+    ss.pdf_ref = ss.pdf
+
+if ss.pdf_ref:
+    binary_data = ss.pdf_ref.getvalue()
+    pdf_viewer(input=binary_data, width=700)
+
+# Create placeholders for webcam and transcription
 FRAME_WINDOW = st.image([])
+TRANSCRIPT_WINDOW = st.empty()
 
-# Create a container to display the predictions
-predictions_container = st.empty()
+# Checkbox to toggle webcam
+run = st.checkbox("Start Webcam", key="start_webcam_checkbox")
 
-# Store predictions in a list
-predictions = []
+# Button to control live audio transcription
+start_transcription = st.button("Start Audio Transcription")
+stop_transcription = st.button("Stop Audio Transcription")
 
+# Button to display final transcript
+display_transcript = st.button("Display Final Transcript")
+
+# Transcription storage
+if "transcription_text" not in ss:
+    ss.transcription_text = []
+
+# Function to record audio and transcribe using Whisper
+def record_and_transcribe():
+    chunk = 1024  # Audio chunk size
+    format = pyaudio.paInt16  # 16-bit audio format
+    channels = 1  # Mono audio
+    rate = 16000  # Sample rate
+    record_seconds = 10  # Record duration
+    audio = pyaudio.PyAudio()
+
+    # Temporary file for audio storage
+    temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+
+    # Start recording
+    stream = audio.open(format=format, channels=channels, rate=rate, input=True, frames_per_buffer=chunk)
+    st.write("Recording audio...")
+    frames = []
+
+    # Record chunks
+    for _ in range(0, int(rate / chunk * record_seconds)):
+        data = stream.read(chunk)
+        frames.append(data)
+
+    # Stop recording
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    # Save audio to a temporary file
+    with wave.open(temp_audio_file, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(audio.get_sample_size(format))
+        wf.setframerate(rate)
+        wf.writeframes(b''.join(frames))
+
+    # Transcribe the audio with Whisper
+    st.write("Transcribing audio...")
+    result = model_whisper.transcribe(temp_audio_file)
+    os.remove(temp_audio_file)  # Clean up temporary file
+    return result['text']
+
+# Initialize webcam
 if run:
     cap = cv2.VideoCapture(0)  # Open webcam
 
@@ -38,85 +114,44 @@ if run:
         if not ret:
             st.write("Failed to grab frame.")
             break
-        
+
         # Recolor the frame (BGR to RGB)
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image.flags.writeable = False
-        
+
         # Make detections
         results = holistic.process(image)
-        
+
         image.flags.writeable = True
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        # Draw landmarks for face, hands, and pose
-        mp_drawing.draw_landmarks(image, results.face_landmarks, mp_holistic.FACEMESH_TESSELATION, 
-                                 mp_drawing.DrawingSpec(color=(80,110,10), thickness=1, circle_radius=1),
-                                 mp_drawing.DrawingSpec(color=(80,256,121), thickness=1, circle_radius=1))
-        
-        mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
-                                 mp_drawing.DrawingSpec(color=(80,22,10), thickness=2, circle_radius=4),
-                                 mp_drawing.DrawingSpec(color=(80,44,121), thickness=2, circle_radius=2))
+        # Draw landmarks
+        mp_drawing.draw_landmarks(image, results.face_landmarks, mp_holistic.FACEMESH_TESSELATION,
+                                  mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1),
+                                  mp_drawing.DrawingSpec(color=(80, 256, 121), thickness=1, circle_radius=1))
 
-        mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS, 
-                                 mp_drawing.DrawingSpec(color=(121,22,76), thickness=2, circle_radius=4),
-                                 mp_drawing.DrawingSpec(color=(121,44,250), thickness=2, circle_radius=2))
+        mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
+                                  mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=4),
+                                  mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2))
 
-        mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS, 
-                                 mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=4),
-                                 mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2))
-
-        # Extract and process the pose and face landmarks for classification
-        try:
-            pose = results.pose_landmarks.landmark
-            pose_row = list(np.array([[landmark.x, landmark.y, landmark.z, landmark.visibility] for landmark in pose]).flatten())
-            
-            face = results.face_landmarks.landmark
-            face_row = list(np.array([[landmark.x, landmark.y, landmark.z, landmark.visibility] for landmark in face]).flatten())
-            
-            row = pose_row + face_row
-            
-            X = pd.DataFrame([row])
-            body_language_class = model.predict(X)[0]
-            body_language_prob = model.predict_proba(X)[0]
-            
-            # Display the class and probability on the frame
-            coords = tuple(np.multiply(
-                            np.array(
-                                (results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_EAR].x, 
-                                 results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_EAR].y)),
-                            [640, 480]).astype(int))
-            
-            cv2.rectangle(image, (coords[0], coords[1] + 5), 
-                          (coords[0] + len(body_language_class) * 20, coords[1] - 30), 
-                          (245, 117, 16), -1)
-            cv2.putText(image, body_language_class, coords, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-            
-            # Display status box for class and probability
-            cv2.rectangle(image, (0, 0), (250, 60), (245, 117, 16), -1)
-            cv2.putText(image, 'CLASS', (95, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
-            cv2.putText(image, body_language_class.split(' ')[0], (90, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(image, 'PROB', (15, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
-            cv2.putText(image, str(round(body_language_prob[np.argmax(body_language_prob)], 2)),
-                        (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-
-            # Store prediction result in the list
-            predictions.append({
-                "Class": body_language_class,
-                "Probability": round(body_language_prob[np.argmax(body_language_prob)], 2)
-            })
-
-        except:
-            pass
-
-        # Update the webcam feed in Streamlit
+        # Update the webcam feed
         FRAME_WINDOW.image(image)
-
-        # Display the predictions in Streamlit as a table
-        with predictions_container:
-            st.write("### Predictions per Frame:")
-            st.write(pd.DataFrame(predictions))
 
     cap.release()  # Release the webcam when done
 else:
     st.write("Click 'Start Webcam' to display the feed")
+
+# Start transcription
+if start_transcription:
+    text = record_and_transcribe()
+    ss.transcription_text.append(text)
+    TRANSCRIPT_WINDOW.text_area("Live Transcription:", value="\n".join(ss.transcription_text), height=300)
+
+# Stop transcription
+if stop_transcription:
+    st.write("Audio transcription stopped.")
+
+# Display final transcript after the interview
+if display_transcript:
+    st.write("### Final Transcript:")
+    st.text_area("Interview Transcript:", value="\n".join(ss.transcription_text), height=500)
